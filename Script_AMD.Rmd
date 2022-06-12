@@ -1,0 +1,487 @@
+---
+title: "Mapa Tematico de la Cuenca Chillon"
+author: "Ing. Rafael Ocaña"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    social: [ "twitter", "facebook", "whatsapp", "instagram", "telegram", "linkedin", "pinterest" ]
+    source_code: "https://github.com/GorkyFlorez"
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+##--------------------------  LIBRERIAS
+library(sf)
+library(mapedit)
+library(raster)
+library(ggplot2)
+library(tmap)
+library(rgee)
+library(mapedit)
+library(rgee)
+library(googledrive)
+library(rgee)
+library(mapedit)
+library(tibble)
+library(sf)
+library(cptcity)
+library(tidyverse)
+library(sp)
+library(leaflet.extras2)
+library(raster)
+library(stars)
+library(geojsonio)
+library(ggmap)
+library(leafem)
+library(leaflet.extras)
+library(leaflet.extras2)
+##--------------------------USUARIO
+ee_Initialize("gflorezc", drive = T)
+# Cargar el punto
+
+box <- ee$Geometry$Rectangle(coords= c(-77.13734, -11.9698,-76.3714,-11.31218),
+                             proj= "EPSG:4326", geodesic = F)
+
+Cuenca_Chi = st_read("SHP/Cuenca_chillon.shp")  %>% sf_as_ee()
+
+sentinel2 <- ee$ImageCollection("COPERNICUS/S2_SR")
+
+Sivia_image <-sentinel2$filterBounds(Cuenca_Chi)$ 
+  filterDate("2020-01-01", "2021-06-07")$ 
+  sort("CLOUDY_PIXEL_PERCENTAGE", FALSE)$
+  mosaic()$
+  clip(Cuenca_Chi) 
+
+trueColor <- list(min= 0,max= 3000, bands= c("B4","B3", "B2"))
+
+m="https://images.vexels.com/media/users/3/143561/isolated/preview/afa3aa927b63061e3b0222b7dab9cdbf-ubicaci--n-n--utica-norte-flecha-vintage-by-vexels.png"
+
+NDVI_SIVIA   <- Sivia_image$normalizedDifference(c("B8", "B4"))
+
+visParam = list(
+  min = -1,
+  max = 1,
+  palette = c(
+    'FFFFFF', 'CE7E45', 'DF923D', 'F1B555', 'FCD163', '99B718', '74A901',
+    '66A000', '529400', '3E8601', '207401', '056201', '004C00', '023B01',
+    '012E01', '011D01', '011301' ))
+
+viz       <- list(min= 0, max= 6000, bands= c("B11","B8", "B2")) 
+
+Ri <- st_read("SHP/Rios.shp")
+Rio  <- st_transform(Ri,crs = st_crs("+proj=longlat +datum=WGS84 +no_defs"))
+
+# Clasificacion supervisada
+trainig <- Sivia_image$sample(region = Cuenca_Chi,
+                            scale= 8,
+                            numPixels =3000)
+clusterer <- ee$Clusterer$wekaKMeans(6)$train(trainig)
+result <- Sivia_image$cluster(clusterer)
+
+
+
+
+# Cargammos los SHp del Peru ---------------------------------------------------------------
+
+MDD = st_read("SHP/Cuenca_chillon.shp") 
+
+lbl         <- data.frame(month_abb = month.abb, mes = 1:12)
+
+Prec        <- getData("worldclim", var = "prec", 
+                       res=0.5, lon=-74.8773, lat=-11.54012)
+Prec_MDD    <- crop(Prec, MDD)
+Prec_MDD    <- Prec_MDD <- mask(Prec_MDD,MDD)
+PPAnual_MDD <- do.call("sum", unstack(Prec_MDD))
+plot(PPAnual_MDD)
+# Elaboramos los meses Para precipitacion-----------------------------------------
+vls         <- rasterToPoints(Prec_MDD) %>% 
+  as_tibble() %>% 
+  gather(var, value, -x, -y) %>% 
+  mutate(mes = parse_number(var)) %>% 
+  inner_join(., lbl, by = 'mes') %>% 
+  dplyr::select(x, y, month_abb, value) %>% 
+  mutate(month_abb = factor(month_abb, levels = month.abb))
+
+vls %>% 
+  filter(month_abb == 'Jan')
+summary(vls$value)
+# Elaboramos los mapas  ----------------------------------------------------------
+colores2<- c('#9331dc', '#165dff', '#10aebe', '#00ffff', '#ffee21', '#f19e21', '#ff4223')
+colores1<- c('#ff4223','#f19e21','#ffee21','#00ffff', '#10aebe', '#165dff','#9331dc')
+
+gg          <- ggplot(vls)  +
+  geom_tile(aes(x = x, y =  y, fill = value)) +
+  facet_wrap(~ month_abb) +
+  scale_fill_gradientn(colours = colores1, 
+                       na.value = 'white', limits = c(0, 200), breaks = seq(0, 200, 50)) +
+  geom_sf(data = MDD, fill = NA, color = 'black', size = 0.2)+
+  theme_bw() +
+  scale_x_continuous(breaks = c(-72.5, -71.0, -69.5)) +
+  labs(title = 'Precipitación mensual - Cuenca Chillón', fill = 'mm',  x = 'Longitud', y = 'Latitud', caption = "") +
+  theme(legend.position = 'bottom',
+        plot.background = element_rect(fill = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.width = unit(2, 'line'),
+        panel.border = element_rect(size = 1, color="white"),
+        axis.text.x  = element_text(face="bold", color="white", size=4),
+        axis.text.y  = element_text(angle = 90,face="bold", color="white", size=4),
+        strip.text=element_text(family='Anton', face='bold', size=4, hjust=0, color='white'),
+        strip.background=element_rect(fill='black'),
+        plot.title = element_text(size = 10, hjust = 0.5, color = "#4e4d47", family="serif", face = "italic"),
+        plot.subtitle = element_text(size = 8, hjust = 0.8, face = "italic", color = "#4e4d47", family="serif"),
+        plot.caption = element_text(size = 8, hjust = 0.95, color = "springgreen", family="serif", face = "italic")) +
+  guides(shape = guide_legend(override.aes = list(size = 7)))+
+  ggtitle("Precipitación mensual - Cuenca Chillón")+
+  labs(subtitle="", x="Longitud",y="Latitud",
+       caption="Fuente: https://www.worldclim.org/")+
+  ggspatial::annotation_scale(location = "br",bar_cols = c("grey60", "white"), text_family = "ArcherPro Book", text_col="black")
+
+
+
+
+# Cargammos los SHp del Peru ---------------------------------------------------------------
+Cusco  = st_read("SHP/Cuenca_chillon.shp") 
+
+lb         <- data.frame(month_abb = month.abb, mes = 1:12)
+
+# Extraemos los datos raster de Precipitacion -----------------------------------------------
+
+tmean        <- getData("worldclim", var = "tmean", res=0.5, lon=-74.8773, lat=-11.54012)
+
+tmean_MDD    <- crop(tmean, Cusco)
+tmean_MDD    <- tmean_MDD <- mask(tmean_MDD,Cusco)
+summary(tmean_MDD)
+tmeanAnual_MDD = tmean_MDD/10
+tmeanAnual_MD <- do.call("sum", unstack(tmean_MDD))
+plot(tmeanAnual_MD)
+
+# Elaboramos los meses Para precipitacion-----------------------------------------
+vl         <- rasterToPoints(tmeanAnual_MDD) %>% 
+  as_tibble() %>% 
+  gather(var, value, -x, -y) %>% 
+  mutate(mes = parse_number(var)) %>% 
+  inner_join(., lb, by = 'mes') %>% 
+  dplyr::select(x, y, month_abb, value) %>% 
+  mutate(month_abb = factor(month_abb, levels = month.abb))
+
+vl %>% 
+  filter(month_abb == 'Jan')
+summary(vls$value)
+
+colores<- c('#d8e2dc', '#8ecae6', '#023e8a', '#03045e', '#184e77', '#40916c', '#80b918',
+            '#55a630','#aacc00','#d4d700','#eeef20','#ffff3f','#ff9e00','#ff9100','#ff6d00','#e36414'
+            ,'#9a031e')
+
+
+
+A=ggplot(vl)  +
+  geom_tile(aes(x = x, y =  y, fill = value)) +
+  facet_wrap(~ month_abb) +
+  scale_fill_gradientn(colours = colores, 
+                       breaks = c(2,4,6,8,10,12,14,16,18,20,22,24,26,28,30),
+                       na.value = 'white',
+                       labels = c("[0 -2] ","[2 - 4]", "[4 -6]", "[6 -8]", "[8 -10]", "[10 -12]",
+                                  "[12 -14]","[14 - 16]","[16 - 18]","[18 - 20]","[20 - 22]","[22 - 24]"
+                                  ,"[24 - 26]","[26 - 28]","[28 - 30]"),
+                       name='Temperatura \nPromedio Anual ºC') +
+  guides(fill = guide_legend(title.position = "top",direction = "vertical"))+
+  geom_sf(data=Cusco, color="white", fill=NA, size=0.3)+
+  theme_bw() +
+  # geom_sf_label(data = Cusco_xy , aes(x= X, y=Y, label = NAME_2), size =2, color="black",alpha=0.4,fontfamily = "serif",  fontface="italic")+
+  scale_x_continuous(breaks = c(-74, -72.5, -71.5, 70.5)) +
+  labs(title = 'Temperatura mensual - Cuenca Chillón' , fill = 'Temperatura \nPromedio mensual ºC',  x = 'Longitud', y = 'Latitud', caption = "Gorky Florez") +
+  theme(
+    plot.background = element_rect(fill = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(face="bold", color="white"),
+    legend.key.width = unit(3, 'line'),
+    panel.border = element_rect(size = 1, color="white"),
+    axis.text.x  = element_text(face="bold", color="white", size=4),
+    axis.text.y  = element_text(angle = 90,face="bold", color="white", size=4),
+    strip.text=element_text(family='Anton', face='bold', size=3, hjust=0, color='white'),
+    strip.background=element_rect(fill='black'),
+    plot.title = element_text(size = 10, hjust = 0.5, color = "white", family="serif", face = "italic"),
+    plot.subtitle = element_text(size = 8, hjust = 0.8, face = "italic", color = "white", family="serif"),
+    plot.caption = element_text(size = 8, hjust = 0.95, color = "white", family="serif", face = "italic")) +
+  guides(shape = guide_legend(override.aes = list(size = 8)))+
+  ggtitle("Temperatura Promedio mensual ºC de la Cuenca Chillón")+
+  labs(subtitle="", x="Longitud",y="Latitud",
+       caption="Fuente: Data: https://www.worldclim.org")+
+  ggspatial::annotation_scale(location = "br",bar_cols = c("grey60", "white"), text_family = "ArcherPro Book", text_col="black")
+
+
+```
+
+Color Natural Sentinel 2
+===================================== 
+
+Column {data-width=550}
+-----------------------------------------------------------------------
+
+### Cuenca Chillon
+```{r d}
+# Visualizacion
+Map$centerObject(box)
+Map$addLayer(Sivia_image, visParams = trueColor, name="Color Natural 2022 - Sentinel2")%>% 
+  addLogo(position = "topleft",
+          offset.x = 50,
+          offset.y = 10,
+          width = 100,
+          height = 100, m)%>% 
+  addPolylines(data= Rio, color = "#a2d2ff", fillOpacity = 0.1,weight = 1,group = "Rios")%>% 
+  addControl(html = "<p><strong><em>Analisis Multitemporal de la Cuenca Chillon</em></strong></p>",
+           position = "topright")%>% 
+  addMiniMap(tiles = providers$Esri.WorldImagery,toggleDisplay = TRUE, position = "bottomleft")%>% 
+  addControl(html = "<p><strong><em>2022</em></strong></p>",
+             position = "bottomright")%>%
+  addDrawToolbar(targetGroup = "Graficos",editOptions = editToolbarOptions(selectedPathOptions = selectedPathOptions()))%>%
+  addMeasure(position = "topleft",
+             primaryLengthUnit = "meters",
+             primaryAreaUnit = "sqmeters",
+             activeColor = "#3D535D",
+             completedColor = "#7D4479")%>% 
+  addSearchOSM() %>% 
+  addControlGPS() %>% 
+  addResetMapButton%>%
+  addLayersControl(baseGroups = c("OSM", "Satellite","CartoDB","Terrain","Terrain.ESRI"),
+                   overlayGroups = c( "Rios", "Color Natural 2022 - Sentinel2"),
+                   position = "topright",
+                   options = layersControlOptions(collapsed = T))%>%
+  addControl("<P><B>Satelites!</B> Capas ...<br/><ul><li>Color Natural</li> 
+     <li>NDVI</li>
+     <li>Analisis de Agricultura</li>
+     <li>Precipitacion </li>
+     <li>Temperatura</li> 
+     <li>Humedad</li> 
+     <li>Color Verdadero</li> 
+     <li>Rios</li> 
+     <li>Cuenca Chillon</li> 
+     <li>Color infrarrojo</li></ul></P>",
+           position='bottomright')%>%
+    addProviderTiles(providers$OpenStreetMap, group = "OSM")%>%
+    addProviderTiles(providers$Esri.WorldImagery, group = "Satellite")%>%
+    addProviderTiles(providers$CartoDB.DarkMatter,group = "CartoDB")%>%
+    addProviderTiles(providers$Stamen.Terrain, group = "Terrain") %>%
+    addProviderTiles(providers$Esri.WorldStreetMap, group = "Terrain.ESRI") 
+
+
+```
+
+
+
+NDVI
+===================================== 
+
+Column {data-width=550}
+-----------------------------------------------------------------------
+
+### Cuenca Normalized difference vegetation index
+```{r dt}
+# Visualizacion
+Map$centerObject(box)
+Map$addLayer(eeObject =NDVI_SIVIA  , "NDWI SIVIA", visParams = visParam) %>% 
+  addLogo(position = "topleft",
+          offset.x = 50,
+          offset.y = 10,
+          width = 100,
+          height = 100, m)%>% 
+  addPolylines(data= Rio, color = "#a2d2ff", fillOpacity = 0.1,weight = 1,group = "Rios")%>% 
+  addControl(html = "<p><strong><em>NDVI - 
+Normalized difference vegetation index</em></strong></p>",
+           position = "topright")%>% 
+  addMiniMap(tiles = providers$Esri.WorldImagery,toggleDisplay = TRUE, position = "bottomleft")%>% 
+  addControl(html = "<p><strong><em>2022</em></strong></p>",
+             position = "bottomright")%>%
+  addDrawToolbar(targetGroup = "Graficos",editOptions = editToolbarOptions(selectedPathOptions = selectedPathOptions()))%>%
+  addMeasure(position = "topleft",
+             primaryLengthUnit = "meters",
+             primaryAreaUnit = "sqmeters",
+             activeColor = "#3D535D",
+             completedColor = "#7D4479")%>% 
+  addSearchOSM() %>% 
+  addControlGPS() %>% 
+  addResetMapButton %>%
+  addLayersControl(baseGroups = c("OSM", "Satellite","CartoDB","Terrain","Terrain.ESRI"),
+                   overlayGroups = c( "Rios", "NDVI"),
+                   position = "topright",
+                   options = layersControlOptions(collapsed = T))%>%
+  addControl("<P><B>Satelites!</B> Capas ...<br/><ul><li>Color Natural</li> 
+     <li>NDVI</li>
+     <li>Analisis de Agricultura</li>
+     <li>Precipitacion </li>
+     <li>Temperatura</li> 
+     <li>Humedad</li> 
+     <li>Color Verdadero</li> 
+     <li>Rios</li> 
+     <li>Cuenca Chillon</li> 
+     <li>Color infrarrojo</li></ul></P>",
+           position='bottomright')%>%
+  addProviderTiles(providers$OpenStreetMap, group = "OSM")%>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "Satellite")%>%
+  addProviderTiles(providers$CartoDB.DarkMatter,group = "CartoDB")%>%
+  addProviderTiles(providers$Stamen.Terrain, group = "Terrain") %>%
+  addProviderTiles(providers$Esri.WorldStreetMap, group = "Terrain.ESRI") 
+
+
+
+```
+
+
+
+
+
+
+
+Analisis de Agricultura
+===================================== 
+
+Column {data-width=550}
+-----------------------------------------------------------------------
+
+### Cuenca Normalized difference vegetation index
+```{r dte}
+# Visualizacion
+Map$centerObject(box)
+Map$addLayer(Sivia_image, visParams = viz, name="Analisis de Agricultura") %>% 
+  addLogo(position = "topleft",
+          offset.x = 50,
+          offset.y = 10,
+          width = 100,
+          height = 100, m)%>% 
+  addPolylines(data= Rio, color = "#a2d2ff", fillOpacity = 0.1,weight = 1,group = "Rios")%>% 
+  addControl(html = "<p><strong><em>Analisis de Agricultura</em></strong></p>",
+             position = "topright")%>% 
+  addMiniMap(tiles = providers$Esri.WorldImagery,toggleDisplay = TRUE, position = "bottomleft")%>% 
+  addControl(html = "<p><strong><em>2022</em></strong></p>",
+             position = "bottomright")%>%
+  addDrawToolbar(targetGroup = "Graficos",editOptions = editToolbarOptions(selectedPathOptions = selectedPathOptions()))%>%
+  addMeasure(position = "topleft",
+             primaryLengthUnit = "meters",
+             primaryAreaUnit = "sqmeters",
+             activeColor = "#3D535D",
+             completedColor = "#7D4479")%>% 
+  addSearchOSM() %>% 
+  addControlGPS() %>% 
+  addResetMapButton %>%
+  addLayersControl(baseGroups = c("OSM", "Satellite","CartoDB","Terrain","Terrain.ESRI"),
+                   overlayGroups = c( "Rios", "Analisis de Agricultura"),
+                   position = "topright",
+                   options = layersControlOptions(collapsed = T))%>%
+  addControl("<P><B>Satelites!</B> Capas ...<br/><ul><li>Color Natural</li> 
+     <li>NDVI</li>
+     <li>Analisis de Agricultura</li>
+     <li>Precipitacion </li>
+     <li>Temperatura</li> 
+     <li>Humedad</li> 
+     <li>Color Verdadero</li> 
+     <li>Rios</li> 
+     <li>Cuenca Chillon</li> 
+     <li>Color infrarrojo</li></ul></P>",
+             position='bottomright')%>%
+  addProviderTiles(providers$OpenStreetMap, group = "OSM")%>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "Satellite")%>%
+  addProviderTiles(providers$CartoDB.DarkMatter,group = "CartoDB")%>%
+  addProviderTiles(providers$Stamen.Terrain, group = "Terrain") %>%
+  addProviderTiles(providers$Esri.WorldStreetMap, group = "Terrain.ESRI") 
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Cambio de cobertura 
+===================================== 
+
+Column {data-width=550}
+-----------------------------------------------------------------------
+
+### Cuenca Normalized difference vegetation index
+```{r dtegmm}
+# Visualizacion
+
+Map$centerObject(box)
+Map$addLayer(eeObject = result$randomVisualizer(), name="Cambio de Cobertura")%>% 
+  addLogo(position = "topleft",
+          offset.x = 50,
+          offset.y = 10,
+          width = 100,
+          height = 100, m)%>% 
+  addPolylines(data= Rio, color = "#a2d2ff", fillOpacity = 0.1,weight = 1,group = "Rios")%>% 
+  addControl(html = "<p><strong><em>Cambio de Cobertura vegetal</em></strong></p>",
+             position = "topright")%>% 
+  addMiniMap(tiles = providers$Esri.WorldImagery,toggleDisplay = TRUE, position = "bottomleft")%>% 
+  addControl(html = "<p><strong><em>2022</em></strong></p>",
+             position = "bottomright")%>%
+  addDrawToolbar(targetGroup = "Graficos",editOptions = editToolbarOptions(selectedPathOptions = selectedPathOptions()))%>%
+  addMeasure(position = "topleft",
+             primaryLengthUnit = "meters",
+             primaryAreaUnit = "sqmeters",
+             activeColor = "#3D535D",
+             completedColor = "#7D4479")%>% 
+  addSearchOSM() %>% 
+  addControlGPS() %>% 
+  addResetMapButton %>%
+  addLayersControl(baseGroups = c("OSM", "Satellite","CartoDB","Terrain","Terrain.ESRI"),
+                   overlayGroups = c( "Rios", "Cambio de Cobertura"),
+                   position = "topright",
+                   options = layersControlOptions(collapsed = T))%>%
+  addControl("<P><B>Satelites!</B> Capas ...<br/><ul><li>Color Natural</li> 
+     <li>NDVI</li>
+     <li>Analisis de Agricultura</li>
+     <li>Precipitacion </li>
+     <li>Temperatura</li> 
+     <li>Humedad</li> 
+     <li>Color Verdadero</li> 
+     <li>Rios</li> 
+     <li>Cuenca Chillon</li> 
+     <li>Color infrarrojo</li></ul></P>",
+             position='bottomright')%>%
+  addProviderTiles(providers$OpenStreetMap, group = "OSM")%>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "Satellite")%>%
+  addProviderTiles(providers$CartoDB.DarkMatter,group = "CartoDB")%>%
+  addProviderTiles(providers$Stamen.Terrain, group = "Terrain") %>%
+  addProviderTiles(providers$Esri.WorldStreetMap, group = "Terrain.ESRI") 
+
+```
+
+
+ 
+
+
+Precipitación y temperatura
+===================================== 
+
+Column {data-width=550}
+-----------------------------------------------------------------------
+
+### Precipitación mensual - Cuenca Chillón
+```{r dteggd}
+# Visualizacion
+gg
+```
+
+Column {data-width=550}
+-----------------------------------------------------------------------
+
+### Temperatura Anual - Cuenca Chillón
+```{r dteggsd}
+# Visualizacion
+A
+```
+
+
